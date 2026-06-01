@@ -1,0 +1,141 @@
+name: Risk Assessment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+  workflow_call:
+    inputs:
+      agent_ref:
+        description: "Git ref of pr-risk-diff to run (default main)"
+        type: string
+        default: main
+      use_remote_api:
+        description: "POST to PR_RISK_API_URL instead of running agent in-job"
+        type: boolean
+        default: false
+    secrets:
+      GEMINI_API_KEY:
+        required: false
+      PR_RISK_API_URL:
+        required: false
+      PR_RISK_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+concurrency:
+  group: risk-assessment-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  AGENT_REPO: adcellerant/pr-risk-diff
+  CONSUMER_DIR: consumer-repo
+
+jobs:
+  wait-for-checks:
+    if: github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for other checks
+        uses: poseidon/wait-for-status-checks@v0.6.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ignore-check-names: Risk Assessment
+
+  assess-risk:
+    needs: wait-for-checks
+    if: github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (this repo PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Checkout agent (consumer workflow_call)
+        if: github.event_name == 'workflow_call'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.AGENT_REPO }}
+          ref: ${{ inputs.agent_ref || 'main' }}
+          path: agent
+
+      - name: Checkout consumer PR (workflow_call)
+        if: github.event_name == 'workflow_call'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: ${{ env.CONSUMER_DIR }}
+
+      - name: Resolve working directory
+        id: wd
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_call" ]; then
+            echo "dir=agent" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Copy consumer context (workflow_call)
+        if: github.event_name == 'workflow_call'
+        run: |
+          if [ -f "${{ env.CONSUMER_DIR }}/.pr-risk/context.md" ]; then
+            mkdir -p agent/.pr-risk
+            cp "${{ env.CONSUMER_DIR }}/.pr-risk/context.md" agent/.pr-risk/context.md
+          fi
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: ${{ steps.wd.outputs.dir }}/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: ${{ steps.wd.outputs.dir }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Build PR payload
+        working-directory: ${{ steps.wd.outputs.dir }}
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: pnpm exec tsx scripts/build-pr-payload.ts
+
+      - name: Run assessment (remote API)
+        if: inputs.use_remote_api == true
+        working-directory: ${{ steps.wd.outputs.dir }}
+        env:
+          PR_RISK_API_URL: ${{ secrets.PR_RISK_API_URL }}
+          PR_RISK_API_KEY: ${{ secrets.PR_RISK_API_KEY }}
+          PR_RISK_PAYLOAD_PATH: pr-risk-payload.json
+          PR_RISK_REPORT_PATH: risk-report.json
+        run: pnpm exec tsx scripts/run-via-api.ts
+
+      - name: Run assessment (local ADK)
+        if: inputs.use_remote_api != true
+        working-directory: ${{ steps.wd.outputs.dir }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          USE_MULTI_AGENT: ${{ vars.USE_MULTI_AGENT || 'false' }}
+          PR_RISK_PAYLOAD_PATH: pr-risk-payload.json
+          PR_RISK_REPORT_PATH: risk-report.json
+        run: pnpm assess
+
+      - name: Publish PR comment and check run
+        working-directory: ${{ steps.wd.outputs.dir }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_RISK_REPORT_PATH: risk-report.json
+        run: pnpm publish

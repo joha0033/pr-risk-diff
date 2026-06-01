@@ -1,0 +1,12 @@
+name: PR Risk
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+jobs:
+  assess:
+    uses: adcellerant/pr-risk-diff/.github/workflows/assess-pr-risk.yml@main
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

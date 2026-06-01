@@ -1,0 +1,23 @@
+# Example: opt-in from another repo (Phase 2 hybrid)
+# Copy to .github/workflows/pr-risk.yml in consumer repos.
+#
+# jobs:
+#   pr-risk:
+#     uses: adcellerant/pr-risk-diff/.github/workflows/assess-pr-risk.yml@main
+#     secrets:
+#       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+#       PR_RISK_API_URL: ${{ secrets.PR_RISK_API_URL }}
+#       PR_RISK_API_KEY: ${{ secrets.PR_RISK_API_KEY }}
+#     with:
+#       use_remote_api: true
+
+name: Consumer example (disabled)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "See file comments for consumer wiring"

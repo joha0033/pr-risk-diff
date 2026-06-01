@@ -1,0 +1,7 @@
+node_modules/
+.pnpm-store/
+dist/
+.env
+risk-report.json
+pr-risk-payload.json
+*.log
